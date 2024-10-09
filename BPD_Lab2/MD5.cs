@@ -40,70 +40,6 @@ namespace BPD_Lab2
             6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21
         };
 
-        public static string ComputeHash(string input)
-        {
-            byte[] inputBytes = Encoding.ASCII.GetBytes(input);
-            byte[] paddedInput = PadMessage(inputBytes);
-
-            uint A = A0;
-            uint B = B0;
-            uint C = C0;
-            uint D = D0;
-
-            for(int i = 0; i < paddedInput.Length / 64; i++)
-            {
-                byte[] block = new byte[64];
-
-                Array.Copy(paddedInput, i * 64, block, 0, 64);
-
-                uint[] M = new uint[16];
-                for(int j = 0; j < 16; j++)
-                {
-                    M[j] = BitConverter.ToUInt32(block, j * 4);
-                }
-                uint AA = A, BB = B, CC = C, DD = D;
-
-                for (uint j = 0; j < 64; j++)
-                {
-                    uint F, g;
-
-                    if(j < 16)
-                    {
-                        F = (B & C) | (~B & D);
-                        g = j;
-                    }
-                    else if(j < 32)
-                    {
-                        F = (B & D) | (C & ~D);
-                        g = (1 + 5 * j) % 16;
-                    }
-                    else if(j < 48)
-                    {
-                        F = B ^ C ^ D;
-                        g = (5 + 3 * j) % 16;
-                    }
-                    else
-                    {
-                        F = C ^ (B | ~D);
-                        g = (7 * j) % 16;
-                    }
-
-                    uint tempD = D;
-                    D = C;
-                    C = B;
-                    B = LeftRotate((A + F + M[g] + T[j]), (int)S[j]) + B;
-                    A = tempD;
-                }
-
-                A += AA;
-                B += BB;
-                C += CC;
-                D += DD;
-            }
-
-            return GetByteString(A) + GetByteString(B) + GetByteString(C) + GetByteString(D);
-        }
-
         private static byte[] PadMessage(byte[] input)
         {
             int inputLength = input.Length;
@@ -127,14 +63,148 @@ namespace BPD_Lab2
             return (value << shift) | (value >> (32 - shift));
         }
 
-        private static string ToHex(uint value)
-        {
-            return value.ToString("X8").ToLower();
-        }
-
         private static string GetByteString(uint x)
         {
             return String.Join("", BitConverter.GetBytes(x).Select(y => y.ToString("X2")));
         }
+
+        private static void ProcessBlock(ref uint A, ref uint B, ref uint C, ref uint D, uint[] M)
+        {
+            uint AA = A, BB = B, CC = C, DD = D;
+
+            for (uint j = 0; j < 64; j++)
+            {
+                uint F, g;
+                
+                if (j < 16) //перший цикл
+                {
+                    F = (B & C) | (~B & D);
+                    g = j;
+                }
+                else if (j < 32) //другий цикл
+                {
+                    F = (B & D) | (C & ~D);
+                    g = (1 + 5 * j) % 16;
+                }
+                else if (j < 48) //третій цикл
+                {
+                    F = B ^ C ^ D;
+                    g = (5 + 3 * j) % 16;
+                }
+                else //четвертий цикл
+                {
+                    F = C ^ (B | ~D);
+                    g = (7 * j) % 16;
+                }
+                //свап регістрів
+                uint tempD = D;
+                D = C;
+                C = B;
+                B = LeftRotate((A + F + M[g] + T[j]), (int)S[j]) + B;
+                A = tempD;
+            }
+            //акумуляція проміжних результатів
+            A += AA;
+            B += BB;
+            C += CC;
+            D += DD;
+        }
+
+        private static void ProcessFinalBlock(ref uint A, ref uint B, ref uint C, ref uint D, byte[] block, int bytesRead, ulong totalLength)
+        {
+            // Створюємо копію блока та додаємо паддінг
+            byte[] finalBlock = new byte[64];
+            Array.Copy(block, finalBlock, bytesRead);
+
+            finalBlock[bytesRead] = 0x80; // Додаємо 1 біт
+
+            if (bytesRead < 56)
+            {
+                // Додаємо довжину повідомлення (в бітах) у кінець блока
+                ulong messageLengthBits = totalLength * 8;
+                byte[] lengthBytes = BitConverter.GetBytes(messageLengthBits);
+                Array.Copy(lengthBytes, 0, finalBlock, 56, 8);
+
+                uint[] M = new uint[16];
+                for (int i = 0; i < 16; i++)
+                {
+                    M[i] = BitConverter.ToUInt32(finalBlock, i * 4);
+                }
+
+                ProcessBlock(ref A, ref B, ref C, ref D, M);
+            }
+            else
+            {
+                // Якщо мало місця для довжини, робимо 2 блоки
+                uint[] M = new uint[16];
+                for (int i = 0; i < 16; i++)
+                {
+                    M[i] = BitConverter.ToUInt32(finalBlock, i * 4);
+                }
+
+                ProcessBlock(ref A, ref B, ref C, ref D, M);
+
+                // Створюємо новий блок з нулями і додаємо довжину повідомлення
+                byte[] secondBlock = new byte[64];
+                ulong messageLengthBits = totalLength * 8;
+                byte[] lengthBytes = BitConverter.GetBytes(messageLengthBits);
+                Array.Copy(lengthBytes, 0, secondBlock, 56, 8);
+
+                for (int i = 0; i < 16; i++)
+                {
+                    M[i] = BitConverter.ToUInt32(secondBlock, i * 4);
+                }
+
+                ProcessBlock(ref A, ref B, ref C, ref D, M);
+            }
+        }
+        public static string ComputeMD5Hash(Stream dataStream)
+        {
+            uint A = 0x67452301;
+            uint B = 0xefcdab89;
+            uint C = 0x98badcfe;
+            uint D = 0x10325476;
+
+            byte[] buffer = new byte[64]; // Блок для зчитування даних (64 байти = 512 біт)
+            int bytesRead;
+            ulong totalLength = 0;
+
+            // Зчитуємо файл або рядок частинами
+            while ((bytesRead = dataStream.Read(buffer, 0, buffer.Length)) == 64)
+            {
+                uint[] M = new uint[16];
+                for (int i = 0; i < 16; i++)
+                {
+                    M[i] = BitConverter.ToUInt32(buffer, i * 4);
+                }
+                ProcessBlock(ref A, ref B, ref C, ref D, M);
+                totalLength += (ulong)bytesRead;
+            }
+
+            totalLength += (ulong)bytesRead;
+
+            // Обробка останнього блока з додаванням паддінгу і довжини
+            ProcessFinalBlock(ref A, ref B, ref C, ref D, buffer, bytesRead, totalLength);
+
+            return GetByteString(A) + GetByteString(B) + GetByteString(C) + GetByteString(D);
+        }
+
+        public static string ComputeMD5ForFile(string filePath)
+        {
+            using (FileStream fileStream = File.OpenRead(filePath))
+            {
+                return ComputeMD5Hash(fileStream);
+            }
+        }
+
+        public static string ComputeMD5ForString(string input)
+        {
+            byte[] inputBytes = System.Text.Encoding.UTF8.GetBytes(input);
+            using (MemoryStream memoryStream = new MemoryStream(inputBytes))
+            {
+                return ComputeMD5Hash(memoryStream);
+            }
+        }
+
     }
 }
